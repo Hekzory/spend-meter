@@ -1,0 +1,20 @@
+{
+  "name": "spend-meter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A live spend meter for Claude Code: the session's cost with subagents and workflows, docked at the right.",
+  "license": "MIT",
+  "scripts": {
+    "validate": "claude plugin validate --strict .",
+    "test": "claude plugin test .",
+    "typecheck": "tsc -p .",
+    "screenshot": "docs/screenshot/render.sh"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-code": "2.1.296",
+    "typescript": "7.0.2"
+  },
+  "allowScripts": {
+    "@anthropic-ai/claude-code": true
+  }
+}

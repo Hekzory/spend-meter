@@ -1,0 +1,21 @@
+{
+  "name": "spend-meter",
+  "version": "0.1.0",
+  "description": "A live spend meter docked at the right: session cost with subagents and workflows, burn rate, subscription limits and where the money goes. Toggle with /spend.",
+  "author": {
+    "name": "Oleg Tsvetkov",
+    "url": "https://github.com/Hekzory"
+  },
+  "homepage": "https://github.com/Hekzory/spend-meter",
+  "repository": "https://github.com/Hekzory/spend-meter",
+  "license": "MIT",
+  "keywords": [
+    "cost",
+    "usage",
+    "tokens",
+    "subagents",
+    "workflows",
+    "pane"
+  ],
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 5 * * 1' # Mondays: a Claude Code release that breaks the mod shows up here first
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Claude Code ${{ matrix.claude }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pinned: the version in package.json, which Dependabot moves; latest: whatever npm has today.
+        claude: [pinned, latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - if: matrix.claude == 'latest'
+        run: npm install --no-save @anthropic-ai/claude-code@latest
+      - run: npx claude --version
+      - name: Validate the manifest, the marketplace and the hooks module
+        run: npm run validate
+      - name: Run the tests
+        run: npm test

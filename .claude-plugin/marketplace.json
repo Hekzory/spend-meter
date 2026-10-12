@@ -1,0 +1,15 @@
+{
+  "name": "spend-meter",
+  "description": "spend-meter, a live spend meter pane for Claude Code",
+  "owner": {
+    "name": "Oleg Tsvetkov",
+    "url": "https://github.com/Hekzory"
+  },
+  "plugins": [
+    {
+      "name": "spend-meter",
+      "source": "./",
+      "description": "A live spend meter docked at the right: session cost with subagents and workflows, burn rate, subscription limits and where the money goes. Toggle with /spend."
+    }
+  ]
+}
