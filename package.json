@@ -14,7 +14,7 @@
     "@anthropic-ai/claude-code": "2.1.296",
     "typescript": "7.0.2"
   },
-  "allowScripts": {
-    "@anthropic-ai/claude-code": true
-  }
+  "trustedDependencies": [
+    "@anthropic-ai/claude-code"
+  ]
 }

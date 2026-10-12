@@ -87,21 +87,26 @@ When a Claude Code update changes prices or models, update `hooks/pricing.ts`.
 
 ## Development
 
+The tools come from [Bun](https://bun.sh), as Claude Code itself is built with it:
+
 ```sh
-npm ci            # Claude Code and TypeScript, pinned in package.json
-npm run validate  # claude plugin validate --strict .
-npm test          # claude plugin test .
+bun install          # Claude Code and TypeScript, pinned in package.json
+bun run validate     # claude plugin validate --strict .
+bun run test         # claude plugin test .
 ```
+
+`bun run test`, not `bun test`: the tests run in Claude Code's own test kit, not
+Bun's runner.
 
 `claude --plugin-dir .` runs a session with the working copy loaded, and reloads it
 as files change. That first load also writes the engine's types into
-`.claude-plugin/types/`; after it, `npm run typecheck` type-checks the mod.
+`.claude-plugin/types/`; after it, `bun run typecheck` type-checks the mod.
 
-CI runs the validator and the tests on every push and pull request, and weekly,
+CI runs the validator and the tests on every push and pull request, and daily,
 against the Claude Code in `package.json` and the newest one on npm. Dependabot
-moves the pins.
+checks the pins daily.
 
-`docs/screenshot.png` shows a made-up session: `npm run screenshot` (needs
+`docs/screenshot.png` shows a made-up session: `bun run screenshot` (needs
 [`uv`](https://docs.astral.sh/uv/)) drives `docs/screenshot/scenario.tsx` through
 the real mod under the engine's test kit and paints the pane it draws.
 
