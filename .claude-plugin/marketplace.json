@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "spend-meter",
-      "source": "./",
+      "source": "./plugin",
       "description": "A live spend meter docked at the right: session cost with subagents and workflows, burn rate, subscription limits and where the money goes. Toggle with /spend."
     }
   ]

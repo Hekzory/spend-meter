@@ -1,6 +1,6 @@
 // The README's screenshot: a made-up but ordinary session driven through the
 // real mod under the engine's test kit, its pane printed as the engine hands it
-// to the terminal. render.sh copies this into tests/, runs it and paints the
+// to the terminal. render.sh copies this into plugin/tests/, runs it and paints the
 // result; it is not one of the mod's tests.
 
 import { mock, test } from 'claude-code/testing'

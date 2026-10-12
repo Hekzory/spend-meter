@@ -1,13 +1,12 @@
 {
   "name": "spend-meter",
-  "version": "0.1.0",
   "private": true,
   "description": "A live spend meter for Claude Code: the session's cost with subagents and workflows, docked at the right.",
   "license": "MIT",
   "scripts": {
-    "validate": "claude plugin validate --strict .",
-    "test": "claude plugin test .",
-    "typecheck": "tsc -p .",
+    "validate": "claude plugin validate --strict . && claude plugin validate --strict plugin",
+    "test": "claude plugin test plugin",
+    "typecheck": "tsc -p plugin",
     "screenshot": "docs/screenshot/render.sh"
   },
   "devDependencies": {

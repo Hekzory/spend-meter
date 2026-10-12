@@ -5,7 +5,8 @@
 # Needs `claude`, and `uv` for Pillow and fontTools.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-mod=$(cd "$here/../.." && pwd)
+root=$(cd "$here/../.." && pwd)
+mod="$root/plugin"
 work=$(mktemp -d)
 trap 'rm -rf "$work" "$mod/tests/zz-screenshot.test.tsx"' EXIT
 
@@ -16,4 +17,4 @@ cp "$here/scenario.tsx" "$mod/tests/zz-screenshot.test.tsx"
 }
 sed -n 's/.*TREE_CELLS//p' "$work/out.txt" >"$work/cells.json"
 sed -n 's/.*TREE_PIXELS//p' "$work/out.txt" >"$work/pixels.json"
-uv run --quiet --with pillow --with fonttools python3 "$here/paint.py" "$work/cells.json" "$mod/docs/screenshot.png"
+uv run --quiet --with pillow --with fonttools python3 "$here/paint.py" "$work/cells.json" "$root/docs/screenshot.png"

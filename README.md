@@ -25,6 +25,11 @@ in every session. From a shell, the same is
 It needs Claude Code 2.1.296 or later. The pane opens by itself in a wide terminal;
 `/spend` opens it at any width.
 
+Claude Code updates plugins from marketplaces other than its own only when told to:
+turn it on in `/plugin` → **Marketplaces** → **spend-meter** → **Enable auto-update**,
+and each new version arrives when Claude Code starts. Otherwise,
+`claude plugin update spend-meter@spend-meter` fetches it.
+
 ## Using it
 
 | | |
@@ -87,20 +92,28 @@ When a Claude Code update changes prices or models, update `hooks/pricing.ts`.
 
 ## Development
 
+The mod is `plugin/`, and only that folder is what an install copies. The repository
+around it (this README, the tools in `package.json`, CI, the screenshot) stays
+behind. Claude Code installs a plugin folder's own packages when it finds a
+`package.json` and a lockfile in it, so the dev tools must not live there.
+
 The tools come from [Bun](https://bun.sh), as Claude Code itself is built with it:
 
 ```sh
 bun install          # Claude Code and TypeScript, pinned in package.json
-bun run validate     # claude plugin validate --strict .
-bun run test         # claude plugin test .
+bun run validate     # claude plugin validate --strict, the marketplace and the mod
+bun run test         # claude plugin test plugin
 ```
 
 `bun run test`, not `bun test`: the tests run in Claude Code's own test kit, not
 Bun's runner.
 
-`claude --plugin-dir .` runs a session with the working copy loaded, and reloads it
-as files change. That first load also writes the engine's types into
-`.claude-plugin/types/`; after it, `bun run typecheck` type-checks the mod.
+`claude --plugin-dir plugin` runs a session with the working copy loaded, and
+reloads it as files change. That first load also writes the engine's types into
+`plugin/.claude-plugin/types/`; after it, `bun run typecheck` type-checks the mod.
+
+A release is a new `version` in `plugin/.claude-plugin/plugin.json`: Claude Code
+compares versions, so commits under the same version never reach an install.
 
 CI runs the validator and the tests on every push and pull request, and daily,
 against the Claude Code in `package.json` and the newest one on npm. Dependabot
