@@ -1,4 +1,4 @@
-// List prices per million tokens, as Claude Code 2.1.296's own model catalog
+// List prices per million tokens, as Claude Code 2.1.300's own model catalog
 // has them (the same table /cost prices with), and the step pricing it does.
 // The engine hands a mod the session's total but not each response's dollars,
 // so this prices each response to say who spent what; the total stays the

@@ -28,8 +28,9 @@ const STEP_USAGE = {
 }
 
 /** The engine beneath the plugin: a session that has cost `bill.usd` so far, its pane open or not. */
-function engine(on: On, bill: { usd: number }, isPaneOpen = false) {
+function engine(on: On, bill: { usd: number }, isPaneOpen = false, version = '2.1.300') {
   const clock = mock.clock(on, { now: NOW })
+  on('session.version', () => ({ value: { version, base: version } }))
   mock.store(on)
   mock.env(on, { HOME: '/nowhere', TERM: 'xterm-256color' })
   on('session.id', () => ({ value: 'session-1' }))
@@ -38,6 +39,7 @@ function engine(on: On, bill: { usd: number }, isPaneOpen = false) {
   on('fs.list', () => ({ value: [] }))
   on('session.usage', () => ({ value: usageOf(bill.usd) }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('ui.panes', () => ({ value: isPaneOpen ? [{ id: 'spend', isPlaced: true, isShown: true }] : [] }) as never)
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
@@ -317,6 +319,90 @@ describe('the meter in a session', () => {
     })
     expect(await ui.find({ text: '$0.42' })).toBeDefined()
     expect(await ui.find({ text: /WHERE IT GOES/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a subagent’s turn is not this turn', async ($, on) => {
+    const bill = { usd: 2 }
+    const clock = engine(on, bill)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.turn.start({ text: 'go', turnId: 'main-1' })
+    bill.usd = 3
+    await clock.advance(1000)
+    await $.agent.spawn(spawnArgs('find the auth flow'))
+    await $.turn.start({ text: 'look around', turnId: 'sub-1', agentId: 'a-1' })
+    await clock.advance(1000)
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+    expect(await ui.find({ type: 'Text', text: '+$1.00' })).toBeDefined()
+    expect((await ui.find({ text: /^\$\S+ per request/ })) === undefined).toBe(true)
+    await ui.unmount()
+  })
+
+  test('a resumed agent keeps its name and runs again', async ($, on) => {
+    engine(on, { usd: 2 })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.agent.spawn(spawnArgs('find the auth flow'))
+    await step($, 'claude-opus-5-5', 'a-1')
+    await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 't1', agentId: 'a-1', reason: 'answer' })
+    await $.agent.spawn({ ...spawnArgs('a later message'), resume: { agentId: 'a-1' } })
+    await step($, 'claude-opus-5-5', 'a-1')
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 60, 80) })
+    expect((await ui.find({ key: 'src:agent:a-1' }))?.text).toMatch(/^● Explore · find the auth flow/)
+    await ui.unmount()
+  })
+
+  for (const [version, isNew] of [['2.1.296', false], ['2.1.300', true]] as const) {
+    test(`text weights and sizes are named only to an engine that takes them (${version})`, async ($, on) => {
+      engine(on, { usd: 2 }, false, version)
+      await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+      await step($, 'claude-opus-5-5')
+      const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'desktop', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+      const texts = await ui.findAll({ type: 'Text' })
+      const named = (prop: string) => texts.some(t => t.props[prop] !== undefined)
+      // The kit fills `bold` and `weight` in from each other, so the tree an old engine gets is told by the rest.
+      for (const prop of ['size', 'tabular', 'mono']) expect(named(prop)).toBe(isNew)
+      expect((await ui.find({ type: 'Text', text: '$2.00' }))?.props).toMatchObject(isNew ? { weight: 'semibold', tabular: true } : { bold: true })
+      await ui.unmount()
+    })
+  }
+
+  test('an agent’s row shows its transcript in the main view, and goes back', async ($, on) => {
+    engine(on, { usd: 2 })
+    const asked: unknown[] = []
+    on('ui.view', ($, e) => {
+      asked.push(e)
+      return { value: {} }
+    })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.agent.spawn(spawnArgs('find the auth flow'))
+    await step($, 'claude-opus-5-5', 'a-1')
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+    await ui.press({ key: 'src:agent:a-1' })
+    expect((await ui.find({ key: 'view:a-1' }))?.text).toBe('↗ show its transcript')
+    await ui.press({ key: 'view:a-1' })
+    expect(asked).toEqual([{ agentId: 'a-1' }])
+    await ui.unmount()
+
+    // Viewing the agent, its row is open by itself and offers the way back.
+    await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: { ...PANE_PROPS('dock', 44, 80), view: { agentId: 'a-1' } } })
+      .then(async viewing => {
+        await viewing.press({ key: 'src:agent:a-1' })
+        expect((await viewing.find({ key: 'view:a-1' }))?.text).toBe('← back to the main conversation')
+        await viewing.press({ key: 'view:a-1' })
+        expect(asked).toEqual([{ agentId: 'a-1' }, {}])
+        await viewing.unmount()
+      })
+  })
+
+  test('an older engine is not offered the transcript', async ($, on) => {
+    engine(on, { usd: 2 }, false, '2.1.296')
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.agent.spawn(spawnArgs('find the auth flow'))
+    await step($, 'claude-opus-5-5', 'a-1')
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+    await ui.press({ key: 'src:agent:a-1' })
+    expect(await ui.find({ text: /per request/ })).toBeDefined()
+    expect(await ui.find({ key: 'view:a-1' })).toBeUndefined()
     await ui.unmount()
   })
 

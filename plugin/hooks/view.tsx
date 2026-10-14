@@ -60,12 +60,40 @@ export type ViewData = {
   viewedAgentId?: string
   /** Whether the chart may be a kitty-protocol picture rather than cells. */
   gfx: 'cells' | 'pixels'
+  caps: Caps
 }
 
 export type ViewActions = {
   cycleUnit: () => void
   select: (key: string | null) => void
+  /** Puts an agent's transcript in the main view; undefined goes back to the main one. */
+  view: (agentId: string | undefined) => void
 }
+
+/** What the engine the meter runs in can draw and do, as its version says. */
+export type Caps = {
+  /** Text `weight`, `size`, `tabular` and `mono`, since 2.1.299; an older engine refuses a tree that names them. */
+  textStyles: boolean
+  /** `$.ui.view`, since 2.1.300. */
+  agentView: boolean
+}
+
+export const OLD_ENGINE: Caps = { textStyles: false, agentView: false }
+
+export function capsOf(v: { version: string; base?: string } | undefined): Caps {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v?.base ?? v?.version ?? '')
+  if (m === null) return OLD_ENGINE
+  const n = Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3])
+  return { textStyles: n >= 2_001_299, agentView: n >= 2_001_300 }
+}
+
+/** Text styles as the engine spells them: bold was `bold` before 2.1.299, `weight` since. */
+function looksOf(caps: Caps) {
+  return caps.textStyles
+    ? ({ strong: { weight: 'semibold' }, hero: { weight: 'semibold', size: 'heading', tabular: true }, num: { tabular: true }, table: { mono: true } } as const)
+    : ({ strong: { bold: true }, hero: { bold: true }, num: {}, table: {} } as const)
+}
+type Looks = ReturnType<typeof looksOf>
 
 type Ui = Elements[RenderSurface]
 /** The terminal's own elements: cells colored one by one, and pictures. */
@@ -200,10 +228,11 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
   const isBusy = d.live.inflight > 0
   const main = d.sources.rows['main']
   const isInline = d.placement === 'inline'
+  const look = looksOf(d.caps)
 
   const heading = (text: string, right?: string) => (
     <Box justifyContent="space-between" marginTop={1}>
-      <Text bold color="subtle">
+      <Text {...look.strong} color="subtle">
         {text}
       </Text>
       {right !== undefined && <Text dimColor>{right}</Text>}
@@ -214,7 +243,7 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
   const header = (
     <Box justifyContent="space-between">
       <Box gap={2}>
-        <Text bold color="claude">
+        <Text {...look.strong} color="claude">
           ◆ spend
         </Text>
         {isBusy ? (
@@ -247,10 +276,14 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
         printer(Text, tick)
       ) : (
         <Box justifyContent="space-between">
-          <Text bold color={heroColor}>
+          <Text {...look.hero} color={heroColor}>
             {hero.text}
           </Text>
-          {streaming !== undefined && <Text color="claude">{streaming}</Text>}
+          {streaming !== undefined && (
+            <Text {...look.num} color="claude">
+              {streaming}
+            </Text>
+          )}
         </Box>
       )}
       <Button key="caption" plain dimColor onPress={act.cycleUnit}>
@@ -267,8 +300,12 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
   const statLine = (label: string, value: string, right: string, color?: string) => (
     <Box justifyContent="space-between">
       <Box gap={1}>
-        <Text dimColor>{label.padEnd(10)}</Text>
-        <Text color={color}>{value}</Text>
+        <Text {...look.table} dimColor>
+          {label.padEnd(10)}
+        </Text>
+        <Text {...look.num} color={color}>
+          {value}
+        </Text>
       </Box>
       <Text dimColor>{right}</Text>
     </Box>
@@ -357,12 +394,16 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
     limitLines.push(
       <Box justifyContent="space-between">
         <Box gap={1}>
-          <Text bold>{windowName(l.kind).padEnd(3)}</Text>
+          <Text {...look.strong} {...look.table}>
+            {windowName(l.kind).padEnd(3)}
+          </Text>
           <Text>
             <Text color={pctColor(l.pct)}>{on}</Text>
             <Text dimColor>{off}</Text>
           </Text>
-          <Text color={pctColor(l.pct)}>{fmtPct(l.pct).padStart(4)}</Text>
+          <Text {...look.table} color={pctColor(l.pct)}>
+            {fmtPct(l.pct).padStart(4)}
+          </Text>
         </Box>
         <Text dimColor>{resets}</Text>
       </Box>,
@@ -389,12 +430,14 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
     limitLines.push(
       <Box justifyContent="space-between">
         <Box gap={1}>
-          <Text bold>ctx</Text>
+          <Text {...look.strong}>ctx</Text>
           <Text>
             <Text color={pctColor(core.ctxPct)}>{on}</Text>
             <Text dimColor>{off}</Text>
           </Text>
-          <Text color={pctColor(core.ctxPct)}>{fmtPct(core.ctxPct).padStart(4)}</Text>
+          <Text {...look.table} color={pctColor(core.ctxPct)}>
+            {fmtPct(core.ctxPct).padStart(4)}
+          </Text>
         </Box>
         <Text dimColor>
           {fmtTok(core.ctxTokens ?? 0)}/{fmtTok(core.ctxWindow)}
@@ -437,7 +480,7 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
     const children = [
       <Text color={colorOf(r)}>{glyphOf(r, tick)}</Text>,
       ` ${clip(label, labelW).padEnd(labelW)} `,
-      <Text bold={isSel}>{cost.padStart(costW)}</Text>,
+      <Text {...(isSel ? look.strong : {})}>{cost.padStart(costW)}</Text>,
       shareOn === '' && shareOff === '' ? '' : ' ',
       <Text color={colorOf(r)}>{shareOn}</Text>,
       <Text dimColor>{shareOff}</Text>,
@@ -445,13 +488,15 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
     sourceLines.push(
       r.source !== undefined ? (
         <Button key={`src:${r.key}`} plain onPress={() => act.select(isSel ? null : r.key)}>
-          {children}
+          <Text {...look.table}>{children}</Text>
         </Button>
       ) : (
-        <Text dimColor={r.kind === 'earlier'}>{children}</Text>
+        <Text {...look.table} dimColor={r.kind === 'earlier'}>
+          {children}
+        </Text>
       ),
     )
-    if (isSel && r.source !== undefined) sourceLines.push(details(Box, Text, r.source, d.now, W))
+    if (isSel && r.source !== undefined) sourceLines.push(details(ui, look, r.source, d, W, act.view))
   }
   const hidden = rows.slice(maxRows)
   if (hidden.length > 0) {
@@ -469,17 +514,17 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
   const tokenLabelW = Math.max(8, W - tokW - costW - 2)
   const isCacheOpen = d.prefs.selected === 'cache'
   const tokenRow = (label: string, n: number, usdOf: number, color?: string) => (
-    <Text>
+    <Text {...look.table}>
       <Text color={color}>{clip(label, tokenLabelW).padEnd(tokenLabelW)}</Text> {fmtTok(n).padStart(tokW)} {fmtUsd(usdOf).padStart(costW)}
     </Text>
   )
   const tokenLines = (
     <Box flexDirection="column">
       <Box justifyContent="space-between" marginTop={1}>
-        <Text bold color="subtle">
+        <Text {...look.strong} color="subtle">
           TOKENS
         </Text>
-        <Text dimColor>
+        <Text {...look.table} dimColor>
           {'tokens'.padStart(tokW)} {'cost'.padStart(costW)}
         </Text>
       </Box>
@@ -487,7 +532,7 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
       {tokenRow('new input, cached', tokens.cw, cost.write)}
       {tokenRow('re-read from cache', tokens.cr, cost.read)}
       {tokens.in > 0 && tokenRow('uncached input', tokens.in, cost.input)}
-      {hit !== undefined && cacheLine(Button, Text, hit, W, isCacheOpen, () => act.select(isCacheOpen ? null : 'cache'))}
+      {hit !== undefined && cacheLine(Button, Text, look, hit, W, isCacheOpen, () => act.select(isCacheOpen ? null : 'cache'))}
       {hit !== undefined && isCacheOpen && (
         <Box paddingLeft={2} marginBottom={1}>
           <Text dimColor>{cacheExplained(sourceRows, tokens.cr, cost.read, main?.model)}</Text>
@@ -501,7 +546,7 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
       <Box flexDirection="column" paddingX={1}>
         <Box justifyContent="space-between">
           <Box gap={1}>
-            <Text bold color={heroColor}>
+            <Text {...look.strong} {...look.num} color={heroColor}>
               {hero.text}
             </Text>
             {turn !== null && <Text dimColor>this turn +{fmtUsd(turnUsd)}</Text>}
@@ -530,7 +575,7 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
 }
 
 /** "cache served 99% of input · excellent", a toggle for what that means. */
-function cacheLine(Button: Ui['Button'], Text: Ui['Text'], hit: number, width: number, isOpen: boolean, toggle: () => void) {
+function cacheLine(Button: Ui['Button'], Text: Ui['Text'], look: Looks, hit: number, width: number, isOpen: boolean, toggle: () => void) {
   const lead = `cache served ${fmtPct(hit * 100)} of input · `
   const [word, color] = hitWord(hit)
   const gap = ' '.repeat(Math.max(1, width - lead.length - word.length - 1))
@@ -538,7 +583,7 @@ function cacheLine(Button: Ui['Button'], Text: Ui['Text'], hit: number, width: n
     <Button key="cache" plain onPress={toggle}>
       <Text dimColor>{lead}</Text>
       <Text color={color}>{word}</Text>
-      <Text dimColor={!isOpen} bold={isOpen}>
+      <Text dimColor={!isOpen} {...(isOpen ? look.strong : {})}>
         {gap}?
       </Text>
     </Button>
@@ -557,7 +602,11 @@ function cacheExplained(rows: readonly SpendSource[], reread: number, readCost: 
   return `Each request resends the whole conversation. New input is cached once, at 1.25–2× the input price; later requests re-read it${rate}.${saved}`
 }
 
-function details(Box: Ui['Box'], Text: Ui['Text'], s: SpendSource, now: number, width: number): RenderElement {
+function details(ui: Ui, look: Looks, s: SpendSource, d: ViewData, width: number, view: ViewActions['view']): RenderElement {
+  const { Box, Text, Button } = ui
+  const now = d.now
+  const agentId = s.kind === 'agent' ? s.key.slice('agent:'.length) : undefined
+  const isViewed = agentId !== undefined && d.viewedAgentId === agentId
   const hit = cacheHit(s.tok)
   const perStep = s.steps === 0 ? 0 : s.usd / s.steps
   const members = Object.values(s.members ?? {}).sort((a, b) => b.usd - a.usd)
@@ -579,13 +628,18 @@ function details(Box: Ui['Box'], Text: Ui['Text'], s: SpendSource, now: number, 
       </Text>
       {members.length > 0 && <Text dimColor>{members.length} {members.length === 1 ? 'agent' : 'agents'}:</Text>}
       {members.slice(0, 6).map(m => (
-        <Text dimColor wrap="truncate-end">
+        <Text {...look.table} dimColor wrap="truncate-end">
           {'  '}
           {m.status === 'running' ? '●' : m.status === 'failed' ? '✗' : '✓'} {clip(m.label, nameW).padEnd(nameW)}{' '}
           {fmtUsd(m.usd).padStart(8)}
         </Text>
       ))}
       {members.length > 6 && <Text dimColor>{'  '}+{members.length - 6} more</Text>}
+      {agentId !== undefined && d.caps.agentView && (
+        <Button key={`view:${agentId}`} plain dimColor onPress={() => view(isViewed ? undefined : agentId)}>
+          {isViewed ? '← back to the main conversation' : '↗ show its transcript'}
+        </Button>
+      )}
     </Box>
   )
 }

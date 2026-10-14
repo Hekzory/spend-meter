@@ -19,7 +19,7 @@ import { rebuild } from './history'
 import type { TranscriptFile } from './history'
 import { outputRate, partsTotal, priceUsage } from './pricing'
 import type { Parts } from './pricing'
-import { chipText, clockText, drawPane, UNITS } from './view'
+import { capsOf, chipText, clockText, drawPane, OLD_ENGINE, UNITS } from './view'
 
 const PANE = 'spend'
 const TITLE = 'Spend'
@@ -84,6 +84,8 @@ const mem = {
   clock: undefined as string | undefined,
   /** The subagent whose transcript the person has on screen, as the pane was last drawn. */
   viewedAgentId: undefined as string | undefined,
+  /** What this engine draws and does, by its version. */
+  caps: OLD_ENGINE,
   held: [] as Held[],
 }
 
@@ -487,6 +489,7 @@ export const register: Register = on => {
       argumentHint: '[budget <usd>|chip|unit|milestones|help]',
       immediate: true,
     })
+    mem.caps = capsOf(await $.session.version().catch(() => undefined))
     const held = await $.state.get({ plugin: 'spend-meter', key: 'prefs' })
     if (held.version === 0) {
       const stored = await $.store.get('prefs')
@@ -534,10 +537,13 @@ export const register: Register = on => {
     return r
   }).catch(($, e, next) => next(e))
 
+  // Subagents' and teammates' turns start here too: only the main loop's is "this turn".
   on('turn.start', async ($, e, next) => {
     const r = await next(e)
-    const now = await $.clock.now()
-    await update($, core, c => (c === null ? c : { ...c, turn: { startedAt: now, usd0: c.usd } }))
+    if (e.agentId === undefined) {
+      const now = await $.clock.now()
+      await update($, core, c => (c === null ? c : { ...c, turn: { startedAt: now, usd0: c.usd } }))
+    }
     return r
   })
 
@@ -579,10 +585,12 @@ export const register: Register = on => {
     const now = await $.clock.now()
     await update($, sources, s => {
       const wfName = s.workflows[e.tool_use_id] ?? (runId === undefined ? undefined : `workflow ${runId.slice(3, 9)}`)
+      // A resumed agent keeps the name it was spawned with.
       const meta: SpendAgentMeta =
-        runId === undefined
+        s.agents[agentId] ??
+        (runId === undefined
           ? { label: `${e.subagentType} · ${e.description}`, type: e.subagentType, model: r.model }
-          : { label: wfName ?? 'workflow', type: e.description || e.subagentType, runId, model: r.model }
+          : { label: wfName ?? 'workflow', type: e.description || e.subagentType, runId, model: r.model })
       const withMeta = { ...s, agents: { ...s.agents, [agentId]: meta } }
       mem.agents = withMeta.agents
       return ensureRow(withMeta, attribute(agentId, withMeta), now)
@@ -656,10 +664,16 @@ export const register: Register = on => {
         surface: e.surface,
         viewedAgentId: e.props.view.agentId,
         gfx: p.gfx === 'cells' || p.gfx === 'pixels' ? p.gfx : mem.gfx,
+        caps: mem.caps,
       },
       {
         cycleUnit: () => void setPrefs($, x => ({ ...x, unit: (x.unit + 1) % UNITS.length })),
         select: key => void update($, prefs, x => ({ ...x, selected: key })),
+        view: agentId =>
+          void $.ui
+            .view(agentId === undefined ? {} : { agentId })
+            .then(v => v.deny !== undefined && $.ui.toast(`Not shown: ${v.deny}`))
+            .catch(() => undefined),
       },
     )
   })

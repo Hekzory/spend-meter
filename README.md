@@ -22,8 +22,8 @@ Answer `y` to add the marketplace, then pick a scope; the user scope loads the m
 in every session. From a shell, the same is
 `claude plugin marketplace add Hekzory/spend-meter && claude plugin install spend-meter@spend-meter`.
 
-It needs Claude Code 2.1.296 or later. The pane opens by itself in a wide terminal;
-`/spend` opens it at any width.
+It needs Claude Code 2.1.296 or later; showing a subagent's transcript from its row
+needs 2.1.300. The pane opens by itself in a wide terminal; `/spend` opens it at any width.
 
 Claude Code updates plugins from marketplaces other than its own only when told to:
 turn it on in `/plugin` → **Marketplaces** → **spend-meter** → **Enable auto-update**,
@@ -44,7 +44,9 @@ and each new version arrives when Claude Code starts. Otherwise,
 
 Press the line under the total to change what it counts. Press a row under
 **where it goes** to see its model, requests, tokens, cache hit and, for a
-workflow, its agents, and the `?` by **cache served** for what the cache saved.
+workflow, its agents; a subagent's row can also put that agent's transcript in the
+main view, and bring the main conversation back. Press the `?` by **cache served**
+for what the cache saved.
 
 ## What it draws with
 
@@ -66,7 +68,7 @@ workflow, its agents, and the `?` by **cache served** for what the cache saved.
   line show: every priced response of the session, subagents, workflow agents and
   the engine's side calls (auto-mode classifier, titles, compaction) included. On a
   subscription it is what the session would cost at API list prices.
-- **Where it goes** prices each response with Claude Code 2.1.296's own catalog
+- **Where it goes** prices each response with Claude Code 2.1.300's own catalog
   (`hooks/pricing.ts`). The engine does not tell a mod which response cost what,
   so the rows are estimates; a row marked `≥` has a model the catalog lacks. Main-thread cache writes are priced at
   the 1-hour rate on a subscription and subagents' at the 5-minute rate, as the
