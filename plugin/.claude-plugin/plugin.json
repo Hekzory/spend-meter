@@ -1,6 +1,6 @@
 {
   "name": "spend-meter",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A live spend meter docked at the right: session cost with subagents and workflows, burn rate, subscription limits and where the money goes. Toggle with /spend.",
   "author": {
     "name": "Oleg Tsvetkov",

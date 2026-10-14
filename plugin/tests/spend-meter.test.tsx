@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On, SessionUsage, TurnStepResult } from 'claude-code'
 
 import { areaCells } from '../hooks/art'
-import { addToSeries, barsOf, burnPerMin, EMPTY_SERIES, fmtUsd, pace, PALETTE } from '../hooks/ledger'
+import { absorbUsage, addToSeries, barsOf, burnPerMin, EMPTY_SERIES, fmtMin, fmtUsd, pace, PALETTE } from '../hooks/ledger'
 import { catalogId, partsTotal, priceUsage } from '../hooks/pricing'
 import type { Parts } from '../hooks/pricing'
 
@@ -27,9 +27,9 @@ const STEP_USAGE = {
   cache_creation_input_tokens: 10_000,
 }
 
-/** The engine beneath the plugin: a session that has cost `bill.usd` so far. */
-function engine(on: On, bill: { usd: number }) {
-  mock.clock(on, { now: NOW })
+/** The engine beneath the plugin: a session that has cost `bill.usd` so far, its pane open or not. */
+function engine(on: On, bill: { usd: number }, isPaneOpen = false) {
+  const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   mock.env(on, { HOME: '/nowhere', TERM: 'xterm-256color' })
   on('session.id', () => ({ value: 'session-1' }))
@@ -39,7 +39,7 @@ function engine(on: On, bill: { usd: number }) {
   on('session.usage', () => ({ value: usageOf(bill.usd) }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  on('ui.panes', () => ({ value: [] }))
+  on('ui.panes', () => ({ value: isPaneOpen ? [{ id: 'spend', isPlaced: true, isShown: true }] : [] }) as never)
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.close', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
@@ -57,6 +57,7 @@ function engine(on: On, bill: { usd: number }) {
     }
     return result
   })
+  return clock
 }
 
 async function step($: Engine, model: string, agentId?: string) {
@@ -153,6 +154,23 @@ describe('ledger', () => {
     expect(micro(p?.perMin)).toBe(3_000_000)
     expect(p?.isShort).toBe(true)
     expect(fmtUsd(0.042)).toBe('$0.042')
+  })
+
+  test('a window standing still is not sampled again, and keeps its pace', () => {
+    const a = absorbUsage(null, usageOf(1), NOW)
+    expect(absorbUsage(a, usageOf(1), NOW + 5 * 60_000).windows).toEqual(a.windows)
+    // 30 points in, then held for ten minutes: over the last fifteen, 2 points a minute.
+    const w = {
+      first: 10,
+      last: 40,
+      carried: 0,
+      samples: [
+        [NOW - 20 * 60_000, 10],
+        [NOW - 10 * 60_000, 40],
+      ] as [number, number][],
+    }
+    expect(micro(pace(w, NOW)?.perMin)).toBe(2_000_000)
+    expect([fmtMin(59_999), fmtMin(37 * 60_000 + 59_000), fmtMin(65 * 60_000)]).toEqual(['<1m', '37m', '1h 05m'])
   })
 })
 
@@ -282,7 +300,7 @@ describe('the meter in a session', () => {
     await step($, 'claude-opus-5-5')
     await $.session.compact({ trigger: 'manual', messages: [{ role: 'user' as const, text: 'hello', toolUses: [] }] })
     const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
-    expect(await ui.find({ text: /compacted 0s ago · 200k → …/ })).toBeDefined()
+    expect(await ui.find({ text: /compacted <1m ago · 200k → …/ })).toBeDefined()
     expect(await ui.find({ text: /main thread · Opus 5\.5 +\$0\.14/ })).toBeDefined()
     await ui.unmount()
   })
@@ -299,6 +317,29 @@ describe('the meter in a session', () => {
     })
     expect(await ui.find({ text: '$0.42' })).toBeDefined()
     expect(await ui.find({ text: /WHERE IT GOES/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a quiet pane writes nothing, and is drawn again when a minute it shows goes by', { timeoutMs: 60_000 }, async ($, on) => {
+    const clock = engine(on, { usd: 0.5 }, true)
+    const writes: string[] = []
+    let isCounting = false
+    on('state.set', ($, e, next) => {
+      if (isCounting) writes.push(e.key)
+      return next(e)
+    })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await step($, 'claude-opus-5-5')
+    await clock.advance(1000)
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 60) })
+    isCounting = true
+    // The session started a minute before NOW; its age shows to the minute.
+    expect(await ui.find({ text: /^1m$/ })).toBeDefined()
+    await clock.advance(30_000)
+    expect(await ui.find({ text: /^1m$/ })).toBeDefined()
+    await clock.advance(30_000)
+    expect(await ui.find({ text: /^2m$/ })).toBeDefined()
+    expect(writes).toEqual([])
     await ui.unmount()
   })
 })

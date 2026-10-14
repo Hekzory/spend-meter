@@ -19,7 +19,7 @@ import { rebuild } from './history'
 import type { TranscriptFile } from './history'
 import { outputRate, partsTotal, priceUsage } from './pricing'
 import type { Parts } from './pricing'
-import { chipText, drawPane, UNITS } from './view'
+import { chipText, clockText, drawPane, UNITS } from './view'
 
 const PANE = 'spend'
 const TITLE = 'Spend'
@@ -80,6 +80,10 @@ const mem = {
   gfx: 'cells' as 'cells' | 'pixels',
   /** Responses that finished while the transcripts were being read back. */
   backfilling: false,
+  /** What the pane last showed that moves with the clock alone; see `clockText`. */
+  clock: undefined as string | undefined,
+  /** The subagent whose transcript the person has on screen, as the pane was last drawn. */
+  viewedAgentId: undefined as string | undefined,
   held: [] as Held[],
 }
 
@@ -238,11 +242,17 @@ async function measure($: EngineInterface) {
   const u = await $.session.usage()
   const now = await $.clock.now()
   const p = await read($, prefs)
-  const before = await read($, core)
-  if (before !== null && (u.cost?.usd ?? before.usd) < before.usd - 1e-9) await resetSession($)
+  let before = await read($, core)
+  if (before !== null && (u.cost?.usd ?? before.usd) < before.usd - 1e-9) {
+    await resetSession($)
+    before = null
+  }
 
+  // A session standing still writes nothing, so nothing is drawn again: the clock alone
+  // redraws a quiet pane, when the text it moves changes (`redrawOnClock`).
+  const isStill = before !== null && isQuiet(before, absorbUsage(before, u, now), p, now)
   let raised: string[] = []
-  const after = await update($, core, c => {
+  const after = isStill ? before : await update($, core, c => {
     const n = absorbUsage(c, u, now)
     raised = c === null ? [] : alertsFor(c, n, p, now)
     // Milestones already behind a session the meter joins late stay quiet.
@@ -253,7 +263,8 @@ async function measure($: EngineInterface) {
 
   const parts = { ...mem.split }
   mem.split.main = mem.split.agents = mem.split.workflows = 0
-  await update($, series, s => addToSeries(s, now, parts))
+  // An empty bucket is not written: the chart and the burn count the buckets since the last.
+  if (parts.main + parts.agents + parts.workflows > 0) await update($, series, s => addToSeries(s, now, parts))
   // The context a compaction left, once a response has measured it.
   const last = after?.compactions?.at(-1)
   if (last !== undefined && last.to === undefined && u.context.tokens !== undefined && now - last.at > 1000) {
@@ -269,6 +280,22 @@ async function measure($: EngineInterface) {
   const said = raised.filter(id => !id.startsWith('b:') || Number(id.split(':')[2]) === top)
   if (after !== null) for (const id of said) announce($, id, after, p, now)
   await showChip($)
+  if (mem.isPaneOpen) await redrawOnClock($, after, p, now)
+}
+
+/** Whether a reading differs from the last only in when it was taken, and raises nothing. */
+function isQuiet(prev: SpendCore, next: SpendCore, p: SpendPrefs, now: number): boolean {
+  return JSON.stringify({ ...prev, at: 0 }) === JSON.stringify({ ...next, at: 0 }) && alertsFor(prev, next, p, now).length === 0
+}
+
+/** Draws the pane again when what it shows moved with the clock alone. */
+async function redrawOnClock($: EngineInterface, c: SpendCore | null, p: SpendPrefs, now: number) {
+  const [se, so] = await Promise.all([read($, series), read($, sources)])
+  const text = clockText({ now, core: c, series: se, sources: so, prefs: p, viewedAgentId: mem.viewedAgentId })
+  if (text === mem.clock) return
+  const isFirst = mem.clock === undefined
+  mem.clock = text
+  if (!isFirst) $.ui.invalidate('ui.render')
 }
 
 function alertsFor(prev: SpendCore, next: SpendCore, p: SpendPrefs, now: number): string[] {
@@ -604,6 +631,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
+    mem.viewedAgentId = e.props.view.agentId
     const [c, s, se, p, l, now] = await Promise.all([
       read($, core),
       read($, sources),

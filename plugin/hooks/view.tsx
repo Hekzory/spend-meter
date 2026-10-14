@@ -12,6 +12,7 @@ import {
   clip,
   fmtDur,
   fmtEta,
+  fmtMin,
   fmtPct,
   fmtTok,
   fmtUsd,
@@ -154,7 +155,33 @@ function compactionNote(list: readonly SpendCompaction[] | undefined, now: numbe
   if (last === undefined) return undefined
   const sizes = last.from === undefined ? '' : ` · ${fmtTok(last.from)} → ${last.to === undefined ? '…' : fmtTok(last.to)}`
   const times = list!.length > 1 ? `compacted ${list!.length}×, last ` : 'compacted '
-  return `${times}${fmtDur(now - last.at)} ago${sizes}`
+  return `${times}${fmtMin(now - last.at)} ago${sizes}`
+}
+
+/**
+ * What the pane shows that moves with the clock alone, written as the pane writes it.
+ * The meter draws the pane again only when this changes: a quiet pane, once a minute.
+ */
+export function clockText(d: Pick<ViewData, 'now' | 'core' | 'series' | 'sources' | 'prefs' | 'viewedAgentId'>): string {
+  const core = d.core
+  if (core === null) return ''
+  const burn = burnPerMin(d.series, d.now)
+  const parts = [fmtMin(d.now - core.startedAt), fmtUsd(burn), fmtUsd(burn * 60)]
+  if (core.turn !== null && core.turn.endedAt === undefined) parts.push(fmtDur(d.now - core.turn.startedAt))
+  for (const l of core.limits) parts.push(l.resetsAt === undefined ? '' : fmtMin(Date.parse(l.resetsAt) - d.now))
+  for (const w of Object.values(core.windows)) {
+    const p = pace(w, d.now)
+    const full = p?.fullAt === undefined ? '' : `${fmtEta(p.fullAt - d.now)} ${p.fullAt - d.now < 60 * 60_000}`
+    parts.push(p === undefined ? '' : `${p.perMin > 0} ${p.isShort} ${full}`)
+  }
+  parts.push(compactionNote(core.compactions, d.now) ?? '')
+  // The chart moves a bucket at a time while a bar or a mark is in sight.
+  const bars = barsOf(d.series, d.now, 240, (core.compactions ?? []).map(c => c.at))
+  if (bars.some(b => barTotal(b) > 0 || b.isCompacted)) parts.push(String(Math.floor(d.now / d.series.bucketMs)))
+  const selected = d.prefs.selected ?? (d.viewedAgentId === undefined ? null : `agent:${d.viewedAgentId}`)
+  const s = selected === null ? undefined : d.sources.rows[selected]
+  if (s?.status === 'running' && s.kind !== 'main' && d.now - s.lastAt >= 5000) parts.push(fmtDur(d.now - s.lastAt))
+  return parts.join('|')
 }
 
 export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewActions): RenderElement {
@@ -198,7 +225,7 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
           <Text dimColor>idle</Text>
         )}
       </Box>
-      <Text dimColor>{core === null ? '' : fmtDur(d.now - core.startedAt)}</Text>
+      <Text dimColor>{core === null ? '' : fmtMin(d.now - core.startedAt)}</Text>
     </Box>
   )
 
@@ -326,7 +353,7 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
   )
   for (const l of core.limits) {
     const [on, off] = gauge(gaugeW, l.pct / 100)
-    const resets = l.resetsAt === undefined ? '' : `↻ ${fmtDur(Date.parse(l.resetsAt) - d.now)}`
+    const resets = l.resetsAt === undefined ? '' : `↻ ${fmtMin(Date.parse(l.resetsAt) - d.now)}`
     limitLines.push(
       <Box justifyContent="space-between">
         <Box gap={1}>

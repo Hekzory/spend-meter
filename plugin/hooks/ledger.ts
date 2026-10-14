@@ -69,14 +69,20 @@ function absorbWindows(
       continue
     }
     const isReset = l.resetsAt !== undefined && w.resetsAt !== undefined && l.resetsAt !== w.resetsAt && l.pct < w.last
-    const samples = isReset ? [] : w.samples.filter(([at]) => now - at <= KEEP_SAMPLES_MS)
-    const lastSample = samples.at(-1)
-    if (lastSample === undefined || lastSample[1] !== l.pct || now - lastSample[0] > 60_000) samples.push([now, l.pct])
+    const samples = isReset ? [] : keepSamples(w.samples, now)
+    // Only a move is a sample: a window standing still writes nothing, so the pane is not drawn again.
+    if (samples.at(-1)?.[1] !== l.pct) samples.push([now, l.pct])
     next[l.kind] = isReset
       ? { first: l.pct, last: l.pct, resetsAt: l.resetsAt, carried: w.carried + Math.max(0, w.last - w.first), samples }
       : { ...w, last: l.pct, resetsAt: l.resetsAt ?? w.resetsAt, samples }
   }
   return next
+}
+
+/** The recent samples, and the newest older one: where the window stood since. */
+function keepSamples(samples: readonly [number, number][], now: number): [number, number][] {
+  const i = samples.findIndex(([at]) => now - at <= KEEP_SAMPLES_MS)
+  return samples.slice(i === -1 ? -1 : Math.max(0, i - 1))
 }
 
 /** How far a window moved while this session watched it, in percent points. */
@@ -94,14 +100,17 @@ export type Pace = {
   isShort: boolean
 }
 
+/** The window holds still between its samples: each is taken when it moves. */
 export function pace(w: SpendWindow, now: number): Pace | undefined {
-  const recent = w.samples.filter(([at]) => now - at <= PACE_SPAN_MS)
-  const first = recent[0]
-  const last = recent.at(-1)
+  const first = w.samples[0]
+  const last = w.samples.at(-1)
   if (first === undefined || last === undefined) return undefined
-  const span = last[0] - first[0]
+  const from = Math.max(first[0], now - PACE_SPAN_MS)
+  const span = now - from
   if (span < 3 * 60_000) return undefined
-  const perMin = ((last[1] - first[1]) / span) * 60_000
+  // Where the window stood when the span began.
+  const start = w.samples.findLast(([at]) => at <= from) ?? first
+  const perMin = ((last[1] - start[1]) / span) * 60_000
   const resetAt = w.resetsAt === undefined ? undefined : Date.parse(w.resetsAt)
   const reset = resetAt !== undefined && Number.isFinite(resetAt) ? resetAt : undefined
   if (perMin <= 0.001) return { perMin: 0, resetAt: reset, isShort: false }
@@ -301,6 +310,16 @@ export function fmtDur(ms: number): string {
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
+  const h = Math.floor(m / 60)
+  if (h < 48) return `${h}h ${String(m % 60).padStart(2, '0')}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
+/** A duration to the minute, for what a quiet pane shows: `<1m`, `37m`, `1h 05m`, `2d 3h`. */
+export function fmtMin(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000))
+  if (m < 1) return '<1m'
+  if (m < 60) return `${m}m`
   const h = Math.floor(m / 60)
   if (h < 48) return `${h}h ${String(m % 60).padStart(2, '0')}m`
   return `${Math.floor(h / 24)}d ${h % 24}h`

@@ -18,7 +18,7 @@ export type SpendWindow = {
   resetsAt?: string
   /** What earlier windows moved before they reset, in percent points. */
   carried: number
-  /** Recent readings, `[at, pct]`, for the pace projection. */
+  /** Readings `[at, pct]`, one each time the window moved, for the pace projection. */
   samples: [number, number][]
 }
 
