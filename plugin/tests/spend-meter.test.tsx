@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, Plugin } from 'claude-code/testing'
 import type { On, SessionUsage, TurnStepResult } from 'claude-code'
 
 import { areaCells } from '../hooks/art'
@@ -9,9 +9,9 @@ import type { Parts } from '../hooks/pricing'
 
 const NOW = Date.parse('2026-10-12T20:00:00Z')
 
-const usageOf = (usd: number): SessionUsage => ({
+const usageOf = (usd: number, ctx: number | null = 200_000): SessionUsage => ({
   startedAt: NOW - 60_000,
-  context: { tokens: 200_000, window: 1_000_000, percent: 20 },
+  context: ctx === null ? { window: 1_000_000 } : { tokens: ctx, window: 1_000_000, percent: ctx / 10_000 },
   rateLimits: [
     { kind: 'five_hour', percentUsed: 12, resetsAt: '2026-10-12T23:00:00.000Z' },
     { kind: 'seven_day', percentUsed: 31 },
@@ -27,8 +27,11 @@ const STEP_USAGE = {
   cache_creation_input_tokens: 10_000,
 }
 
-/** The engine beneath the plugin: a session that has cost `bill.usd` so far, its pane open or not. */
-function engine(on: On, bill: { usd: number }, isPaneOpen = false, version = '2.1.300') {
+/**
+ * The engine beneath the plugin: a session that has cost `bill.usd` so far, its pane open or not.
+ * `bill.ctx` is the context it reports, null from a compaction until the next main response.
+ */
+function engine(on: On, bill: { usd: number; ctx?: number | null }, isPaneOpen = false, version = '2.1.300') {
   const clock = mock.clock(on, { now: NOW })
   on('session.version', () => ({ value: { version, base: version } }))
   mock.store(on)
@@ -37,7 +40,7 @@ function engine(on: On, bill: { usd: number }, isPaneOpen = false, version = '2.
   on('session.cwd', () => ({ value: '/tmp' }))
   on('fs.exists', () => ({ value: false }))
   on('fs.list', () => ({ value: [] }))
-  on('session.usage', () => ({ value: usageOf(bill.usd) }))
+  on('session.usage', () => ({ value: usageOf(bill.usd, bill.ctx) }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
@@ -49,6 +52,7 @@ function engine(on: On, bill: { usd: number }, isPaneOpen = false, version = '2.
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('agent.spawn', ($, e) => ({ model: 'claude-haiku-5-5', agentId: e.description === 'scan' ? 'wf-1' : 'a-1' }))
   on('turn.step', async function* ($, e) {
+    if (e.agentId === undefined && bill.ctx === null) bill.ctx = 30_000
     const result: TurnStepResult = {
       turnId: e.turnId,
       index: e.index,
@@ -85,6 +89,17 @@ const PANE_PROPS = (placement: 'dock' | 'inline', bodyColumns: number, bodyRows:
   scroll: { offset: 0, bodyRows },
   view: {},
 })
+
+// Claude Code's sec-default guard, seated above the plugins a person installs on a machine
+// with managed settings (and above managed ones prependPlugins does not list before it):
+// it sends a compaction on past them.
+const SEC_DEFAULT: Plugin = {
+  name: 'sec-default',
+  tier: 'prepend',
+  register(on) {
+    on('session.compact', ($, e, next) => next.to(e, 'append'))
+  },
+}
 
 const spawnArgs = (description: string, workflow?: { runId: string; agentIndex: number }) => ({
   tool_use_id: 'toolu_1',
@@ -295,15 +310,38 @@ describe('the meter in a session', () => {
     }
   })
 
-  test('a compaction is marked by the context gauge, and nothing resets', async ($, on) => {
-    engine(on, { usd: 5 })
-    on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }))
+  test('a compaction is marked by the context gauge, and nothing resets', { plugins: [SEC_DEFAULT] }, async ($, on) => {
+    const bill = { usd: 5, ctx: 200_000 as number | null }
+    const clock = engine(on, bill)
+    on('session.compact', () => {
+      bill.ctx = null
+      return { messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }
+    })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await step($, 'claude-opus-5-5')
     await $.session.compact({ trigger: 'manual', messages: [{ role: 'user' as const, text: 'hello', toolUses: [] }] })
+    await clock.advance(3000)
     const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
     expect(await ui.find({ text: /compacted <1m ago · 200k → …/ })).toBeDefined()
     expect(await ui.find({ text: /main thread · Opus 5\.5 +\$0\.14/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a compaction mid-turn is marked by the step after it, before any tick', { plugins: [SEC_DEFAULT] }, async ($, on) => {
+    const bill = { usd: 5, ctx: 200_000 as number | null }
+    const clock = engine(on, bill)
+    on('session.compact', () => {
+      bill.ctx = null
+      return { messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }
+    })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.advance(1000) // past the read-back of the transcripts, which keeps only marks after it
+    await step($, 'claude-opus-5-5')
+    await $.session.compact({ trigger: 'auto', messages: [{ role: 'user' as const, text: 'hello', toolUses: [] }] })
+    await step($, 'claude-opus-5-5')
+    await clock.advance(3000)
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+    expect(await ui.find({ text: /compacted <1m ago · 200k → 30k/ })).toBeDefined()
     await ui.unmount()
   })
 

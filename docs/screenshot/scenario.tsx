@@ -24,7 +24,7 @@ test('screenshot', { timeoutMs: 120_000 }, async ($, on) => {
   const clock = mock.clock(on, { now: START })
   mock.store(on)
   mock.env(on, { HOME: '/nowhere', TERM: 'xterm-256color' })
-  const s = { usd: 0, ctx: 42_000, five: 37 }
+  const s = { usd: 0, ctx: 42_000, five: 37, isCompacted: false }
   on('session.id', () => ({ value: 'screenshot' }))
   on('session.cwd', () => ({ value: '/tmp' }))
   on('fs.exists', () => ({ value: false }))
@@ -32,7 +32,7 @@ test('screenshot', { timeoutMs: 120_000 }, async ($, on) => {
   on('session.usage', () => ({
     value: {
       startedAt: START,
-      context: { tokens: s.ctx, window: 1_000_000, percent: s.ctx / 10_000 },
+      context: s.isCompacted ? { window: 1_000_000 } : { tokens: s.ctx, window: 1_000_000, percent: s.ctx / 10_000 },
       rateLimits: [
         { kind: 'five_hour', percentUsed: s.five, resetsAt: new Date(END + 134 * MIN).toISOString() },
         { kind: 'seven_day', percentUsed: 23.8, resetsAt: new Date(END + (3 * 24 + 9) * 60 * MIN).toISOString() },
@@ -43,8 +43,10 @@ test('screenshot', { timeoutMs: 120_000 }, async ($, on) => {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
+  // The engine reports no context from a compaction until the next main response.
   on('session.compact', () => {
     s.ctx = 48_000
+    s.isCompacted = true
     return { messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }
   })
   on('tool.call', () => ({ result: 'ok' }) as never)
@@ -58,6 +60,7 @@ test('screenshot', { timeoutMs: 120_000 }, async ($, on) => {
     agentId: e.workflow !== undefined ? `rv-${REVIEWERS[e.workflow.agentIndex - 1]}` : e.subagentType === 'Explore' ? 'explore' : 'port',
   }))
   on('turn.step', async function* ($, e) {
+    if (e.agentId === undefined) s.isCompacted = false
     const w = wave(e.index)
     const usage: ModelUsage =
       e.agentId === undefined

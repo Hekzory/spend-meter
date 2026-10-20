@@ -446,18 +446,19 @@ export function drawPane(ui: Ui, art: Art | undefined, d: ViewData, act: ViewAct
     )
     const tax = ((core.ctxTokens ?? 0) * readRate(main?.model)) / 1e6
     if (tax > 0 && !isInline) limitLines.push(note(`≈ ${fmtUsd(tax)} to re-read per main request`))
-    const compacted = compactionNote(core.compactions, d.now)
-    if (compacted !== undefined && !isInline) {
-      // The same mark the chart draws where the session compacted.
-      limitLines.push(
-        note(
-          <Text>
-            <Text color={hex(PALETTE.mark)}>│ </Text>
-            {compacted}
-          </Text>,
-        ),
-      )
-    }
+  }
+  // The same mark the chart draws where the session compacted, with or without the gauge:
+  // from a compaction until the next response the context is unknown.
+  const compacted = compactionNote(core.compactions, d.now)
+  if (compacted !== undefined && !isInline) {
+    limitLines.push(
+      note(
+        <Text>
+          <Text color={hex(PALETTE.mark)}>│ </Text>
+          {compacted}
+        </Text>,
+      ),
+    )
   }
 
   // ── where it goes ──

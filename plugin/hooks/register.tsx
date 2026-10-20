@@ -87,6 +87,8 @@ const mem = {
   /** What this engine draws and does, by its version. */
   caps: OLD_ENGINE,
   held: [] as Held[],
+  /** The main conversation's context as last read; see `sawContext`. */
+  ctxTokens: undefined as number | undefined,
 }
 
 // ─── the session's past ──────────────────────────────────────────────────────
@@ -242,6 +244,7 @@ async function measure($: EngineInterface) {
   const pane = (await $.ui.panes()).find(one => one.id === PANE)
   mem.isPaneOpen = pane !== undefined && pane.isPlaced && pane.isShown
   const u = await $.session.usage()
+  await sawContext($, u.context.tokens)
   const now = await $.clock.now()
   const p = await read($, prefs)
   let before = await read($, core)
@@ -288,6 +291,22 @@ async function measure($: EngineInterface) {
 /** Whether a reading differs from the last only in when it was taken, and raises nothing. */
 function isQuiet(prev: SpendCore, next: SpendCore, p: SpendPrefs, now: number): boolean {
   return JSON.stringify({ ...prev, at: 0 }) === JSON.stringify({ ...next, at: 0 }) && alertsFor(prev, next, p, now).length === 0
+}
+
+/**
+ * Marks a compaction of the main conversation, never resets: the spend before it stays
+ * the session's. From a compaction until the next response the engine reports no context,
+ * so a context read and then gone is one. A session.compact hook cannot see it where
+ * Claude Code seats its sec-default guard (a machine with managed settings, a Team or
+ * Enterprise plan): the guard sends that event, and the compaction's row in
+ * session.append, on past every plugin seated after it.
+ */
+async function sawContext($: EngineInterface, tokens: number | undefined) {
+  const from = mem.ctxTokens
+  mem.ctxTokens = tokens
+  if (from === undefined || tokens !== undefined) return
+  const at = await $.clock.now()
+  await update($, core, c => (c === null ? c : { ...c, compactions: [...(c.compactions ?? []), { at, from }].slice(-20) }))
 }
 
 /** Draws the pane again when what it shows moved with the clock alone. */
@@ -362,6 +381,7 @@ async function resetSession($: EngineInterface) {
   await update($, prefs, p => ({ ...p, selected: null }))
   mem.agents = {}
   mem.flights.clear()
+  mem.ctxTokens = undefined
 }
 
 // ─── what is streaming now ───────────────────────────────────────────────────
@@ -524,19 +544,6 @@ export const register: Register = on => {
     return r
   }).catch(($, e, next) => next(e))
 
-  // A compaction is marked, never reset: the spend before it stays the session's.
-  on('session.compact', async ($, e, next) => {
-    const r = await next(e)
-    if (e.agentId === undefined && e.trigger !== 'precompute' && r.skip === undefined) {
-      const at = await $.clock.now()
-      const trigger = e.trigger
-      await update($, core, c =>
-        c === null ? c : { ...c, compactions: [...(c.compactions ?? []), { at, trigger, from: c.ctxTokens }].slice(-20) },
-      )
-    }
-    return r
-  }).catch(($, e, next) => next(e))
-
   // Subagents' and teammates' turns start here too: only the main loop's is "this turn".
   on('turn.start', async ($, e, next) => {
     const r = await next(e)
@@ -599,6 +606,8 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('turn.step', async function* ($, e, next) {
+    // A compaction mid-turn is followed by a step at once, before a tick may have seen it.
+    if (e.agentId === undefined) await $.session.usage().then(u => sawContext($, u.context.tokens)).catch(() => undefined)
     const flightId = `${e.agentId ?? 'main'}:${e.turnId}:${e.index}`
     const flight: Flight = { key: attribute(e.agentId, { ...EMPTY_SOURCES, agents: mem.agents }).key, model: e.model, chars: 0 }
     mem.flights.set(flightId, flight)

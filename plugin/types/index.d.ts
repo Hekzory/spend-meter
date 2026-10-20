@@ -5,8 +5,8 @@ export type SpendTokens = { in: number; out: number; cr: number; cw: number }
 /** USD by what was paid for: written output, new input cached, input re-read from cache, input never cached. */
 export type SpendParts = { input: number; output: number; read: number; write: number }
 
-/** A compaction: when, why, and the context before and after, in tokens. */
-export type SpendCompaction = { at: number; trigger: string; from?: number; to?: number }
+/** A compaction: when, why (read back from the transcript; the meter does not see it live), and the context before and after, in tokens. */
+export type SpendCompaction = { at: number; trigger?: string; from?: number; to?: number }
 
 export type SpendLimit = { kind: string; pct: number; resetsAt?: string }
 
