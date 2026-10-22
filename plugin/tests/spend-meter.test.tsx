@@ -31,14 +31,22 @@ const STEP_USAGE = {
  * The engine beneath the plugin: a session that has cost `bill.usd` so far, its pane open or not.
  * `bill.ctx` is the context it reports, null from a compaction until the next main response.
  */
-function engine(on: On, bill: { usd: number; ctx?: number | null }, isPaneOpen = false, version = '2.1.300') {
+function engine(on: On, bill: { usd: number; ctx?: number | null; transcript?: string; transcriptIO?: (event: 'stat' | 'read') => void }, isPaneOpen = false, version = '2.1.300') {
   const clock = mock.clock(on, { now: NOW })
   on('session.version', () => ({ value: { version, base: version } }))
   mock.store(on)
   mock.env(on, { HOME: '/nowhere', TERM: 'xterm-256color' })
   on('session.id', () => ({ value: 'session-1' }))
   on('session.cwd', () => ({ value: '/tmp' }))
-  on('fs.exists', () => ({ value: false }))
+  on('fs.exists', () => ({ value: bill.transcript !== undefined }))
+  on('fs.stat', () => {
+    bill.transcriptIO?.('stat')
+    return { value: { kind: 'file' as const, size: (bill.transcript ?? '').length, mtimeMs: NOW, isLink: false } }
+  })
+  on('fs.read', () => {
+    bill.transcriptIO?.('read')
+    return { value: bill.transcript ?? '' }
+  })
   on('fs.list', () => ({ value: [] }))
   on('session.usage', () => ({ value: usageOf(bill.usd, bill.ctx) }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -311,9 +319,10 @@ describe('the meter in a session', () => {
   })
 
   test('a compaction is marked by the context gauge, and nothing resets', { plugins: [SEC_DEFAULT] }, async ($, on) => {
-    const bill = { usd: 5, ctx: 200_000 as number | null }
+    const bill = { usd: 5, ctx: 200_000 as number | null, transcript: '' }
     const clock = engine(on, bill)
     on('session.compact', () => {
+      bill.transcript = JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: new Date(NOW).toISOString(), compactMetadata: { preTokens: 200_000 } })
       bill.ctx = null
       return { messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }
     })
@@ -328,9 +337,10 @@ describe('the meter in a session', () => {
   })
 
   test('a compaction mid-turn is marked by the step after it, before any tick', { plugins: [SEC_DEFAULT] }, async ($, on) => {
-    const bill = { usd: 5, ctx: 200_000 as number | null }
+    const bill = { usd: 5, ctx: 200_000 as number | null, transcript: '' }
     const clock = engine(on, bill)
     on('session.compact', () => {
+      bill.transcript = JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: new Date(NOW).toISOString(), compactMetadata: { preTokens: 200_000 } })
       bill.ctx = null
       return { messages: [{ role: 'user' as const, text: 'summary', toolUses: [] }] }
     })
@@ -342,6 +352,109 @@ describe('the meter in a session', () => {
     await clock.advance(3000)
     const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
     expect(await ui.find({ text: /compacted <1m ago · 200k → 30k/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  for (const recovers of [true, false]) {
+    test(`a delayed compaction boundary is detected with usage ${recovers ? 'recovered' : 'still missing'}`, async ($, on) => {
+      const bill = { usd: 5, ctx: 200_000 as number | null, transcript: '' }
+      const clock = engine(on, bill)
+      await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+      await clock.advance(1000)
+      bill.ctx = null
+      await clock.advance(3000)
+      if (recovers) bill.ctx = 30_000
+      await clock.advance(3000)
+      bill.transcript = JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: new Date(NOW + 1000).toISOString(), compactMetadata: { preTokens: 200_000, postTokens: 30_000 } })
+      await clock.advance(5000)
+      const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+      expect(await ui.find({ text: /compacted <1m ago · 200k → 30k/ })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+
+  for (const event of ['stat', 'read'] as const) {
+    test(`compaction confirmation retries a failed fs.${event} after usage recovers`, async ($, on) => {
+      let failNext = false
+      let failures = 0
+      const bill = {
+        usd: 5, ctx: 200_000 as number | null, transcript: '',
+        transcriptIO(method: 'stat' | 'read') {
+          if (failNext && method === event) {
+            failNext = false
+            failures += 1
+            throw new Error('temporary transcript read failure')
+          }
+        },
+      }
+      const clock = engine(on, bill)
+      await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+      await clock.advance(1000)
+      bill.ctx = null
+      await clock.advance(1000)
+      bill.ctx = 30_000
+      bill.transcript = JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: new Date(NOW + 1000).toISOString(), compactMetadata: { preTokens: 200_000, postTokens: 30_000 } })
+      failNext = true
+      await clock.advance(5000)
+      expect(failures).toBe(1)
+      const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+      expect(await ui.find({ text: /compacted <1m ago · 200k → 30k/ })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+
+  test('an old boundary keeps its measured size while a new one is pending', async ($, on) => {
+    const old = JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: new Date(NOW - 2000).toISOString(), compactMetadata: { preTokens: 200_000 } })
+    const bill = { usd: 5, ctx: 30_000 as number | null, transcript: old }
+    const clock = engine(on, bill)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.advance(3000)
+    bill.ctx = null
+    await clock.advance(3000)
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+    expect(await ui.find({ text: /compacted <1m ago · 200k → 30k/ })).toBeDefined()
+    bill.ctx = 10_000
+    bill.transcript += '\n' + JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: new Date(NOW + 3000).toISOString(), compactMetadata: { preTokens: 30_000, postTokens: 10_000 } })
+    await clock.advance(3000)
+    expect(await ui.find({ text: /compacted 2×, last <1m ago · 30k → 10k/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('unconfirmed context loss stops reading after a bounded retry window', async ($, on) => {
+    let reads = 0
+    const bill = {
+      usd: 5, ctx: 50_000 as number | null, transcript: '',
+      transcriptIO(event: 'stat' | 'read') { if (event === 'read') reads += 1 },
+    }
+    const clock = engine(on, bill)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.advance(1000)
+    reads = 0
+    bill.ctx = null
+    await clock.advance(1000)
+    bill.ctx = 51_000
+    await clock.advance(30_000)
+    expect(reads).toBeGreaterThan(2)
+    expect(reads).toBeLessThanOrEqual(11)
+    const settled = reads
+    await clock.advance(30_000)
+    expect(reads).toBe(settled)
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+    expect(await ui.find({ text: /compacted/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('missing context during a routed response is not a compaction', async ($, on) => {
+    const bill = { usd: 5, ctx: 50_000 as number | null, transcript: '' }
+    const clock = engine(on, bill)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.advance(1000)
+    bill.ctx = null
+    await clock.advance(3000)
+    bill.ctx = 51_000
+    await clock.advance(3000)
+    const ui = await $.ui.mount({ plugin: 'spend-meter', surface: 'terminal', component: 'Pane', requestId: 'spend', props: PANE_PROPS('dock', 44, 80) })
+    expect(await ui.find({ text: /compacted/ })).toBeUndefined()
     await ui.unmount()
   })
 

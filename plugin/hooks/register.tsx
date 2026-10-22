@@ -25,8 +25,10 @@ const PANE = 'spend'
 const TITLE = 'Spend'
 const TICK_MS = 250
 const POLL_EVERY = 4 // ticks: the engine's figures once a second
+const CONTEXT_CONFIRM_MS = 10_000
+const CONTEXT_RETRY_MS = 1000
 // The ledger's format: a session whose ledger is older is read back from its transcripts again.
-const LEDGER = 2
+const LEDGER = 3
 
 const DEFAULT_PREFS: SpendPrefs = { unit: 0, chip: true, eggs: true, budget: null, open: true, selected: null }
 const IDLE: SpendLive = { tick: 0, inflight: 0, estUsd: 0, keys: [], flash: null }
@@ -89,6 +91,7 @@ const mem = {
   held: [] as Held[],
   /** The main conversation's context as last read; see `sawContext`. */
   ctxTokens: undefined as number | undefined,
+  contextPending: undefined as { until: number; nextAt: number; isReading: boolean } | undefined,
 }
 
 // ─── the session's past ──────────────────────────────────────────────────────
@@ -153,7 +156,7 @@ async function readMeta($: EngineInterface, path: string): Promise<Record<string
 }
 
 /** Every transcript of this session: the main thread's, its subagents', its workflows'. */
-export async function sessionFiles($: EngineInterface, cwd: string): Promise<TranscriptFile[]> {
+export async function sessionFiles($: EngineInterface, cwd: string, mainOnly = false): Promise<TranscriptFile[]> {
   const id = await $.session.id()
   const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${(await $.env.get('HOME')) ?? ''}/.claude`
   const projects = `${config}/projects`
@@ -171,6 +174,7 @@ export async function sessionFiles($: EngineInterface, cwd: string): Promise<Tra
   }
   const root = main.slice(0, -'.jsonl'.length)
   const files: TranscriptFile[] = [{ text: await readText($, main, (await $.fs.stat(main)).size) }]
+  if (mainOnly) return files
 
   for (const e of await $.fs.list(`${root}/subagents`).catch(() => [])) {
     const agentId = /^agent-(.+)\.jsonl$/.exec(e.name)?.[1]
@@ -293,20 +297,40 @@ function isQuiet(prev: SpendCore, next: SpendCore, p: SpendPrefs, now: number): 
   return JSON.stringify({ ...prev, at: 0 }) === JSON.stringify({ ...next, at: 0 }) && alertsFor(prev, next, p, now).length === 0
 }
 
-/**
- * Marks a compaction of the main conversation, never resets: the spend before it stays
- * the session's. From a compaction until the next response the engine reports no context,
- * so a context read and then gone is one. A session.compact hook cannot see it where
- * Claude Code seats its sec-default guard (a machine with managed settings, a Team or
- * Enterprise plan): the guard sends that event, and the compaction's row in
- * session.append, on past every plugin seated after it.
+/** Missing usage can also occur during a routed response. Confirm it against the
+ * main transcript, retrying for a bounded window even after usage recovers:
+ * the boundary can be flushed later, and a transcript read can fail temporarily.
  */
 async function sawContext($: EngineInterface, tokens: number | undefined) {
   const from = mem.ctxTokens
   mem.ctxTokens = tokens
-  if (from === undefined || tokens !== undefined) return
+  const disappeared = from !== undefined && tokens === undefined
+  if (!disappeared && mem.contextPending === undefined) return
   const at = await $.clock.now()
-  await update($, core, c => (c === null ? c : { ...c, compactions: [...(c.compactions ?? []), { at, from }].slice(-20) }))
+  if (disappeared) mem.contextPending = { until: at + CONTEXT_CONFIRM_MS, nextAt: at, isReading: false }
+  const pending = mem.contextPending
+  if (pending === undefined) return
+  if (at > pending.until) {
+    mem.contextPending = undefined
+    return
+  }
+  if (pending.isReading || at < pending.nextAt) return
+  pending.nextAt = at + CONTEXT_RETRY_MS
+  pending.isReading = true
+  try {
+    const files = await sessionFiles($, await $.session.cwd(), true)
+    if (files.length === 0 || mem.contextPending !== pending) return
+    const confirmed = rebuild(files, at).compactions
+    const before = await read($, core)
+    if (before === null || !confirmed.some(one => !(before.compactions ?? []).some(prev => prev.at === one.at))) return
+    await update($, core, c => c === null ? c : {
+      ...c,
+      compactions: confirmed.map(one => ({ ...one, to: one.to ?? c.compactions?.find(prev => prev.at === one.at)?.to })),
+    })
+    if (mem.contextPending === pending) mem.contextPending = undefined
+  } finally {
+    pending.isReading = false
+  }
 }
 
 /** Draws the pane again when what it shows moved with the clock alone. */
@@ -382,6 +406,7 @@ async function resetSession($: EngineInterface) {
   mem.agents = {}
   mem.flights.clear()
   mem.ctxTokens = undefined
+  mem.contextPending = undefined
 }
 
 // ─── what is streaming now ───────────────────────────────────────────────────
