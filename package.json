@@ -10,7 +10,7 @@
     "screenshot": "docs/screenshot/render.sh"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-code": "2.1.302",
+    "@anthropic-ai/claude-code": "2.1.311",
     "typescript": "7.0.2"
   },
   "trustedDependencies": [
